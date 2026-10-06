@@ -202,6 +202,7 @@ export const ClaudeProviderCapabilitiesV2 = {
     activeSteeringInterruptsTools: true,
     supportsSteeringByInterruptRestart: false,
     supportsQueuedMessages: true,
+    supportsOutputSchema: true,
     terminalStatusQuality: "strong",
   },
   streaming: {
@@ -827,6 +828,8 @@ export function makeClaudeQueryOptions(input: {
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
+  /** JSON Schema for the turn's final answer (a delegated task's resultSchema); the SDK enforces it. */
+  readonly outputSchema?: Record<string, unknown>;
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection);
   const {
@@ -906,6 +909,9 @@ export function makeClaudeQueryOptions(input: {
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    ...(input.outputSchema === undefined
+      ? {}
+      : { outputFormat: { type: "json_schema" as const, schema: input.outputSchema } }),
     systemPrompt: {
       type: "preset" as const,
       preset: "claude_code" as const,
@@ -4921,7 +4927,15 @@ export function makeClaudeAdapterV2(
           }
           input.context.toolCalls.clear();
 
+          // A schema-constrained turn answers through `structured_output`; any
+          // visible text is commentary. The value becomes the final assistant
+          // message, so the delegated result is the JSON itself.
+          const structuredOutput =
+            input.status === "completed" && input.result?.subtype === "success"
+              ? input.result.structured_output
+              : undefined;
           if (
+            structuredOutput === undefined &&
             input.context.assistant.emittedNativeItemIds.size === 0 &&
             input.context.assistant.fallbackText.length > 0
           ) {
@@ -4935,6 +4949,40 @@ export function makeClaudeAdapterV2(
               providerTurnId: input.context.providerTurnId,
               nativeItemId: input.context.assistant.fallbackNativeItemId,
               text: input.context.assistant.fallbackText,
+              ordinal,
+              startedAt: input.context.startedAt,
+              completedAt: input.completedAt,
+            });
+            yield* Effect.all(
+              [
+                emitProviderEvent({
+                  type: "node.updated",
+                  driver: CLAUDE_PROVIDER,
+                  node: artifacts.node,
+                }),
+                emitProviderEvent({
+                  type: "message.updated",
+                  driver: CLAUDE_PROVIDER,
+                  message: artifacts.message,
+                }),
+                emitProviderEvent({
+                  type: "turn_item.updated",
+                  driver: CLAUDE_PROVIDER,
+                  turnItem: artifacts.turnItem,
+                }),
+              ],
+              { concurrency: 1 },
+            );
+          }
+          if (structuredOutput !== undefined && input.result !== undefined) {
+            const nativeItemId = `${input.result.uuid}:structured-output`;
+            const ordinal = yield* resolveItemOrdinal(input.context, nativeItemId);
+            const artifacts = buildAssistantArtifacts({
+              idAllocator,
+              turnInput: input.context.input,
+              providerTurnId: input.context.providerTurnId,
+              nativeItemId,
+              text: JSON.stringify(structuredOutput, null, 2),
               ordinal,
               startedAt: input.context.startedAt,
               completedAt: input.completedAt,
@@ -7120,6 +7168,9 @@ export function makeClaudeAdapterV2(
             resume: shouldResume,
             ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
             cwd: turnInput.runtimePolicy.cwd,
+            ...(turnInput.appThread.delegatedResultSchema === undefined
+              ? {}
+              : { outputSchema: turnInput.appThread.delegatedResultSchema }),
             attachmentsDir,
             settings: adapterOptions.settings,
             environment: adapterOptions.environment,

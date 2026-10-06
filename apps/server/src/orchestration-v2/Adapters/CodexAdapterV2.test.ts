@@ -436,6 +436,37 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
+  it.effect("forwards a delegated result schema as the turn's outputSchema", () =>
+    Effect.gen(function* () {
+      const outputSchema = {
+        type: "object",
+        properties: { decision: { type: "string" } },
+        required: ["decision"],
+      };
+      const build = (schema: Record<string, unknown> | undefined) =>
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: "native-schema",
+          codexInput: [{ type: "text", text: "test" }],
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: null,
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.4",
+          },
+          ...(schema === undefined ? {} : { outputSchema: schema }),
+        });
+
+      const constrained = yield* build(outputSchema);
+      const plain = yield* build(undefined);
+
+      assert.deepEqual(constrained.outputSchema, outputSchema);
+      assert.isUndefined(plain.outputSchema);
+    }),
+  );
+
   it.effect("preserves explicit Codex turn policy overrides", () =>
     Effect.gen(function* () {
       const params = yield* CodexAdapterV2.buildCodexTurnStartParams({

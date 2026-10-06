@@ -50,9 +50,15 @@ export function makeSubagentChildThread(input: {
   readonly now: DateTime.Utc;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
+  /** `delegate_task` resultSchema for this child's final answers. Never inherited from the parent. */
+  readonly delegatedResultSchema?: Record<string, unknown>;
 }): OrchestrationV2AppThread {
+  const { delegatedResultSchema: _parentResultSchema, ...parentThread } = input.parentThread;
   return {
-    ...input.parentThread,
+    ...parentThread,
+    ...(input.delegatedResultSchema === undefined
+      ? {}
+      : { delegatedResultSchema: input.delegatedResultSchema }),
     createdBy: input.createdBy,
     creationSource: input.creationSource,
     id: input.childThreadId,
@@ -204,6 +210,23 @@ export function subagentResultForRun(
     messageId: failure === undefined ? (message?.id ?? turnItem?.messageId ?? null) : null,
     turnItemId: failure?.id ?? turnItem?.id ?? null,
   };
+}
+
+/**
+ * A delegated child's final answer as the JSON value its `resultSchema` asked
+ * for. Providers that enforce the schema natively answer with bare JSON; a
+ * fenced block is tolerated. Anything else means the contract was not met.
+ */
+export function parseDelegatedResultValue(text: string): { readonly value: unknown } | null {
+  const trimmed = text.trim();
+  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(trimmed);
+  const candidate = fenced?.[1]?.trim() ?? trimmed;
+  if (candidate.length === 0) return null;
+  try {
+    return { value: JSON.parse(candidate) as unknown };
+  } catch {
+    return null;
+  }
 }
 
 /** A finished turn can still own live children or queued completion follow-ups. */

@@ -52,11 +52,49 @@ describe("orchestrator MCP contracts", () => {
       latestTerminalSummary: "Workspace inspected.",
       latestTerminalResultContextTransferId: "context-transfer-result-1",
       waitTimedOut: false,
+      typedResult: null,
     });
 
     expect(request.target?.providerInstanceId).toBe("claudeAgent");
     expect(result.status).toBe("completed");
     expect(result.summary).toBe("Workspace inspected.");
+    expect(result.typedResult).toBeNull();
+  });
+
+  it("carries a result schema in and the parsed typed result out", () => {
+    const resultSchema = {
+      type: "object",
+      properties: { decision: { type: "string" }, blockers: { type: "array" } },
+      required: ["decision"],
+    };
+    const request = decodeDelegateTaskInput({
+      task: "Review the patch and decide.",
+      resultSchema,
+      mode: "async",
+    });
+    expect(request.resultSchema).toEqual(resultSchema);
+    expect(() => decodeDelegateTaskInput({ task: "x", resultSchema: "not a schema" })).toThrow();
+
+    const result = decodeDelegateTaskResult({
+      taskId: "node-task-2",
+      childThreadId: "thread-child-2",
+      childRunId: "run-child-2",
+      childNodeId: "node-task-2",
+      status: "completed",
+      workState: "result_available",
+      hasPendingChildRuns: false,
+      providerInstanceId: "codex",
+      model: "gpt-5.4",
+      summary: '{"decision":"ready","blockers":[]}',
+      typedResult: { value: { decision: "ready", blockers: [] } },
+      resultContextTransferId: null,
+      latestTerminalRunId: "run-child-2",
+      latestTerminalStatus: "completed",
+      latestTerminalSummary: '{"decision":"ready","blockers":[]}',
+      latestTerminalResultContextTransferId: null,
+      waitTimedOut: false,
+    });
+    expect(result.typedResult).toEqual({ value: { decision: "ready", blockers: [] } });
   });
 
   it("decodes target model options in canonical and shorthand shapes", () => {

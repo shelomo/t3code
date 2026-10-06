@@ -28,6 +28,7 @@ import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
+  OrchestrationV2ResultSchema,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
@@ -174,6 +175,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
+  resultSchema: Schema.optional(
+    OrchestrationV2ResultSchema.annotate({
+      description:
+        "JSON Schema the child's final answer must satisfy. The result then carries typedResult with the parsed value; read fields from it instead of re-typing the child's text. Only providers whose orchestrator_capabilities entry has canEnforceResultSchema accept it.",
+    }),
+  ),
   mode: Schema.optional(
     Schema.Literals(["async", "wait"]).annotate({
       description:
@@ -205,6 +212,10 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   model: Schema.NullOr(Schema.String),
   summary: Schema.NullOr(Schema.String),
+  typedResult: Schema.NullOr(Schema.Struct({ value: Schema.Unknown })).annotate({
+    description:
+      "summary parsed as JSON when the task requested a resultSchema. Null when no schema was requested, the child failed, or its answer did not parse.",
+  }),
   resultContextTransferId: Schema.NullOr(ContextTransferId),
   waitTimedOut: Schema.Boolean.annotate({
     description:
@@ -480,6 +491,8 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   ),
   canRunChildTask: Schema.Boolean,
   canRunCrossProviderChildTask: Schema.Boolean,
+  /** The provider constrains a child's final answer to a delegate_task resultSchema. */
+  canEnforceResultSchema: Schema.Boolean,
   constraints: Schema.Array(Schema.String),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
@@ -655,6 +668,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "orchestration_error",
       "thread_credential_required",
       "target_required",
+      "result_schema_unsupported",
     ]),
     message: Schema.String,
   },

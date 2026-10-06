@@ -258,6 +258,7 @@ export const CodexProviderCapabilitiesV2 = {
     supportsActiveSteering: true,
     supportsSteeringByInterruptRestart: true,
     supportsQueuedMessages: true,
+    supportsOutputSchema: true,
     terminalStatusQuality: "strong",
   },
   streaming: {
@@ -703,6 +704,8 @@ export function buildCodexTurnStartParams(input: {
   readonly deviceToolsAvailable?: boolean;
   /** ChatGPT token sharing does not accept service tiers. */
   readonly omitServiceTier?: boolean;
+  /** JSON Schema for the model's final response (a delegated task's resultSchema). */
+  readonly outputSchema?: Record<string, unknown>;
 }) {
   return Effect.gen(function* () {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
@@ -769,6 +772,7 @@ export function buildCodexTurnStartParams(input: {
       ...(effort === undefined ? {} : { effort }),
       ...(serviceTier === undefined ? {} : { serviceTier }),
       ...(collaborationMode === undefined ? {} : { collaborationMode }),
+      ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
     });
   });
 }
@@ -5837,6 +5841,9 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+              ...(turnInput.appThread.delegatedResultSchema === undefined
+                ? {}
+                : { outputSchema: turnInput.appThread.delegatedResultSchema }),
             });
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);

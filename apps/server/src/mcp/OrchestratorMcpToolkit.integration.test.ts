@@ -529,7 +529,12 @@ describe("orchestrator MCP toolkit", () => {
               // Native mailbox delivery and its completion races have dedicated integration tests.
               capabilities: {
                 ...CodexProviderCapabilitiesV2,
-                turns: { ...CodexProviderCapabilitiesV2.turns, supportsActiveSteering: false },
+                turns: {
+                  ...CodexProviderCapabilitiesV2.turns,
+                  supportsActiveSteering: false,
+                  // Exercise the resultSchema rejection for a provider that cannot enforce one.
+                  supportsOutputSchema: false,
+                },
               },
               capturedTurns,
               shouldComplete: (turn) =>
@@ -553,9 +558,12 @@ describe("orchestrator MCP toolkit", () => {
                   ? deliveryTerminalGates.get(turn.threadId)
                   : parentTerminalGates.get(turn.threadId),
               response: (turn) =>
-                turn.message.text === delegatedPrompt
-                  ? delegatedResult
-                  : `Claude completed: ${turn.message.text}`,
+                turn.appThread.delegatedResultSchema !== undefined
+                  ? // A schema-constrained child answers with the JSON itself.
+                    JSON.stringify({ decision: "ready", blockers: [], brief: turn.message.text })
+                  : turn.message.text === delegatedPrompt
+                    ? delegatedResult
+                    : `Claude completed: ${turn.message.text}`,
             }),
           ]);
           // Captures parent-wake offers made when a delegated child
@@ -1411,6 +1419,7 @@ describe("orchestrator MCP toolkit", () => {
                 expect.objectContaining({
                   providerInstanceId: claudeInstanceId,
                   canRunCrossProviderChildTask: true,
+                  canEnforceResultSchema: true,
                 }),
                 // No opencode adapter is registered in this harness, so the
                 // capability view must not claim delegation can target it.
@@ -1422,6 +1431,7 @@ describe("orchestrator MCP toolkit", () => {
                 // discover valid target.options ids and values.
                 expect.objectContaining({
                   providerInstanceId: codexInstanceId,
+                  canEnforceResultSchema: false,
                   models: [
                     expect.objectContaining({
                       id: codexModel,
@@ -1728,6 +1738,80 @@ describe("orchestrator MCP toolkit", () => {
             });
             expect(delegatedStatus.resultContextTransferId).not.toBeNull();
             expect(delegatedStatus.latestTerminalResultContextTransferId).not.toBeNull();
+            // No schema was requested, so there is no typed result to read.
+            expect(delegatedStatus.typedResult).toBeNull();
+
+            // A result schema rides on the child thread, constrains the child's
+            // answer, and comes back parsed: the parent reads fields, never
+            // re-types the child's text.
+            const typedPrompt = "Decide whether the delegated API boundary is ready.";
+            const resultSchema = {
+              type: "object",
+              properties: {
+                decision: { type: "string", enum: ["ready", "blocked"] },
+                blockers: { type: "array", items: { type: "string" } },
+                brief: { type: "string" },
+              },
+              required: ["decision", "blockers", "brief"],
+              additionalProperties: false,
+            };
+            const typedValue = { decision: "ready", blockers: [], brief: typedPrompt };
+            const typedCall = yield* invoke("delegate_task", {
+              task: typedPrompt,
+              target: { providerInstanceId: claudeInstanceId, model: claudeModel },
+              resultSchema,
+              mode: "wait",
+              timeoutMs: 10_000,
+              clientRequestId: "delegate-claude-typed-1",
+            });
+            expect(typedCall.isError).toBe(false);
+            const typed = yield* decodeDelegateTaskResult(typedCall.structuredContent).pipe(
+              Effect.orDie,
+            );
+            expect(typed.status).toBe("completed");
+            expect(typed.summary).toBe(JSON.stringify(typedValue));
+            expect(typed.typedResult).toEqual({ value: typedValue });
+            const typedChild = yield* orchestrator.getThreadProjection(typed.childThreadId);
+            expect(typedChild.thread.delegatedResultSchema).toEqual(resultSchema);
+            const typedParent = yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) =>
+                projection.subagents.some(
+                  (task) => task.id === typed.taskId && task.resultValue !== undefined,
+                ),
+            );
+            expect(typedParent.subagents.find((task) => task.id === typed.taskId)).toMatchObject({
+              status: "completed",
+              resultSchema,
+              result: JSON.stringify(typedValue),
+              resultValue: { value: typedValue },
+            });
+            const typedStatusCall = yield* invoke("task_status", { taskId: typed.taskId });
+            const typedStatus = yield* decodeDelegateTaskResult(
+              typedStatusCall.structuredContent,
+            ).pipe(Effect.orDie);
+            expect(typedStatus.typedResult).toEqual({ value: typedValue });
+
+            // A provider that cannot enforce the schema is refused before any
+            // child exists, instead of quietly answering in prose.
+            const unsupportedSchemaCall = yield* invoke("delegate_task", {
+              task: typedPrompt,
+              target: { providerInstanceId: codexInstanceId, model: codexModel },
+              resultSchema,
+              mode: "async",
+              clientRequestId: "delegate-codex-typed-rejected-1",
+            });
+            expect(declaredFailure(unsupportedSchemaCall)).toMatchObject({
+              _tag: "OrchestratorMcpFailure",
+              code: "result_schema_unsupported",
+              message: expect.stringContaining("cannot enforce a result schema"),
+            });
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.filter(
+                (task) => task.prompt === typedPrompt,
+              ),
+            ).toHaveLength(1);
 
             const childFollowupCall = yield* invoke("t3_thread_send", {
               threadId: delegated.childThreadId,

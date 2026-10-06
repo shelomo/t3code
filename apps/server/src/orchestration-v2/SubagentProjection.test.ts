@@ -21,6 +21,7 @@ import {
   delegatedTaskProgress,
   subagentResultForRun,
   makeSubagentConversationArtifacts,
+  parseDelegatedResultValue,
 } from "./SubagentProjection.ts";
 
 import { emptyProjection } from "./ProjectionStore.ts";
@@ -305,4 +306,41 @@ it("exposes the provider failure rather than a progress message from the failed 
   assert.equal(result.text, failure.message);
   assert.equal(result.turnItemId, artifacts.turnItem.id);
   assert.isNull(result.messageId);
+});
+
+it("parses a schema-constrained answer into the delegated result value", () => {
+  // Escaped characters survive untouched: the value never passes through a model again.
+  assert.deepEqual(parseDelegatedResultValue('{"decision":"ready","checks":["grep \\\\(x"]}'), {
+    value: { decision: "ready", checks: ["grep \\(x"] },
+  });
+  assert.deepEqual(parseDelegatedResultValue('```json\n{ "decision": "blocked" }\n```'), {
+    value: { decision: "blocked" },
+  });
+  assert.deepEqual(parseDelegatedResultValue("  [1, 2]  "), { value: [1, 2] });
+  assert.isNull(parseDelegatedResultValue("The patch is ready."));
+  assert.isNull(parseDelegatedResultValue(""));
+  assert.isNull(parseDelegatedResultValue("{not json"));
+});
+
+it("gives a delegated child its own result schema and never its parent's", () => {
+  const resultSchema = { type: "object", properties: { decision: { type: "string" } } };
+  const parentThread = { ...makeParentThread(), delegatedResultSchema: resultSchema };
+  const base = {
+    parentThread,
+    childThreadId,
+    parentNodeId: NodeId.make("node:subagent-parent"),
+    activeProviderThreadId: null,
+    providerInstanceId: childProviderInstanceId,
+    modelSelection: childModelSelection,
+    title: "Typed child",
+    now: childCreatedAt,
+    createdBy: "agent" as const,
+    creationSource: "mcp" as const,
+  };
+
+  assert.isUndefined(makeSubagentChildThread(base).delegatedResultSchema);
+  assert.deepEqual(
+    makeSubagentChildThread({ ...base, delegatedResultSchema: resultSchema }).delegatedResultSchema,
+    resultSchema,
+  );
 });

@@ -18,6 +18,7 @@ import * as Ref from "effect/Ref";
 
 import { OrchestratorProjectionError } from "../orchestration-v2/Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -533,6 +534,9 @@ describe("OrchestratorMcpService provider resolution", () => {
       refreshInstance: () => Effect.succeed(providers),
     });
 
+  // Every stub enforces an output schema except Pi, so capability reporting
+  // can be checked in both directions.
+  const schemaFreeInstanceId = ProviderInstanceId.make("pi");
   const adapterRegistryLayer = (instanceIds: ReadonlyArray<ProviderInstanceId>) =>
     Layer.succeed(
       ProviderAdapterRegistry.ProviderAdapterRegistryV2,
@@ -540,7 +544,21 @@ describe("OrchestratorMcpService provider resolution", () => {
         list: () => Effect.succeed(instanceIds),
         get: (instanceId) =>
           instanceIds.includes(instanceId)
-            ? Effect.succeed({ instanceId } as unknown as ProviderAdapterV2Shape)
+            ? Effect.succeed({
+                instanceId,
+                getCapabilities: () =>
+                  Effect.succeed(
+                    instanceId === schemaFreeInstanceId
+                      ? {
+                          ...CodexProviderCapabilitiesV2,
+                          turns: {
+                            ...CodexProviderCapabilitiesV2.turns,
+                            supportsOutputSchema: false,
+                          },
+                        }
+                      : CodexProviderCapabilitiesV2,
+                  ),
+              } as unknown as ProviderAdapterV2Shape)
             : Effect.fail(
                 new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({ instanceId }),
               ),
@@ -712,11 +730,18 @@ describe("OrchestratorMcpService provider resolution", () => {
             );
             assert.isTrue(entry!.canRunCrossProviderChildTask);
             assert.deepEqual(entry!.constraints, []);
+            // A result schema is only offered where the adapter can enforce it.
+            assert.equal(
+              entry!.canEnforceResultSchema,
+              instanceId !== schemaFreeInstanceId,
+              `unexpected canEnforceResultSchema for ${instanceId}`,
+            );
           }
 
           const disabled = byId.get(disabledAntigravityInstanceId);
           assert.isDefined(disabled);
           assert.isFalse(disabled!.canRunChildTask);
+          assert.isFalse(disabled!.canEnforceResultSchema);
           assert.deepEqual(disabled!.constraints, ["Provider instance is disabled."]);
 
           const fork = byId.get(forkOnlyInstanceId);

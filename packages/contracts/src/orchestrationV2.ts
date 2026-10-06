@@ -220,6 +220,9 @@ export const OrchestrationV2TurnCapabilities = Schema.Struct({
   activeSteeringInterruptsTools: Schema.optional(Schema.Boolean),
   supportsSteeringByInterruptRestart: Schema.Boolean,
   supportsQueuedMessages: Schema.Boolean,
+  // The provider constrains a turn's final answer to a caller-supplied JSON
+  // Schema. Absent on adapters and persisted capabilities that predate it.
+  supportsOutputSchema: Schema.optional(Schema.Boolean),
   terminalStatusQuality: Schema.Literals(["strong", "weak", "none"]),
 });
 export type OrchestrationV2TurnCapabilities = typeof OrchestrationV2TurnCapabilities.Type;
@@ -361,6 +364,15 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
 );
 export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitRecoveryUpdate.Type;
 
+/**
+ * JSON Schema a delegated child's final answer must satisfy. Providers enforce
+ * it natively (Claude Agent SDK `outputFormat`, Codex `turn/start`
+ * `outputSchema`); the orchestrator parses the answer into the task's
+ * `resultValue` so the parent reads fields instead of re-typing text.
+ */
+export const OrchestrationV2ResultSchema = Schema.Record(Schema.String, Schema.Unknown);
+export type OrchestrationV2ResultSchema = typeof OrchestrationV2ResultSchema.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -380,6 +392,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
+  /** A delegated child's `delegate_task` resultSchema; its final answers must match it. */
+  delegatedResultSchema: Schema.optional(OrchestrationV2ResultSchema),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -675,6 +689,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
+  /** JSON Schema the child's final answer must satisfy, when the parent asked for one. */
+  resultSchema: Schema.optional(OrchestrationV2ResultSchema),
   // Parent-wake policy for app-owned tasks: "always" offers a continuation on
   // every terminal (async delegations; queue_after_active sequences it behind
   // a live parent run), "settled_only" offers only when the parent has no
@@ -694,6 +710,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   ]),
   progress: Schema.optional(Schema.String),
   result: Schema.NullOr(Schema.String),
+  /** `result` parsed as JSON when `resultSchema` was requested and the answer parsed; absent otherwise. */
+  resultValue: Schema.optional(Schema.Struct({ value: Schema.Unknown })),
   startedAt: Schema.NullOr(Schema.DateTimeUtc),
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   updatedAt: Schema.DateTimeUtc,
@@ -3004,6 +3022,7 @@ export const OrchestrationV2Command = Schema.Union([
     parentNodeId: NodeId,
     task: TrimmedNonEmptyString,
     title: Schema.optional(TrimmedNonEmptyString),
+    resultSchema: Schema.optional(OrchestrationV2ResultSchema),
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,

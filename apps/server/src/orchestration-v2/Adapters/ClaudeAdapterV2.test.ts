@@ -170,6 +170,30 @@ describe("ClaudeAdapterV2 runtime query policy", () => {
     assert.include(options.settings, { showThinkingSummaries: true });
   });
 
+  it("maps a delegated result schema to the SDK json_schema output format", () => {
+    const schema = {
+      type: "object",
+      properties: { decision: { type: "string" } },
+      required: ["decision"],
+    };
+    const constrained = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "schema-thread",
+      resume: false,
+      cwd: "/workspace",
+      outputSchema: schema,
+    });
+    assert.deepEqual(constrained.outputFormat, { type: "json_schema", schema });
+
+    const plain = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "schema-thread",
+      resume: false,
+      cwd: "/workspace",
+    });
+    assert.isUndefined(plain.outputFormat);
+  });
+
   it("preserves an explicit omitted thinking display", () => {
     const options = ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: CLAUDE_TEST_MODEL_SELECTION,

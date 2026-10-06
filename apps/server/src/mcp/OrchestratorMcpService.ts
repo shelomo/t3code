@@ -71,8 +71,9 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
-  subagentResultForRun,
   delegatedTaskProgress,
+  parseDelegatedResultValue,
+  subagentResultForRun,
 } from "../orchestration-v2/SubagentProjection.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1255,6 +1256,14 @@ const make = Effect.gen(function* () {
           : progress.resultRun !== undefined && isTerminalTaskStatus(status)
             ? subagentResultForRun(childProjection, progress.resultRun).text
             : null;
+      // The published value is authoritative. Before publication (a wait-mode
+      // read racing the finalizer) parse the same text the summary shows.
+      const typedResult =
+        task.resultValue !== undefined
+          ? task.resultValue
+          : task.resultSchema !== undefined && status === "completed" && derivedResult !== null
+            ? parseDelegatedResultValue(derivedResult)
+            : null;
       const resultTransfers = parentProjection.contextTransfers.filter(
         (transfer) =>
           transfer.type === "subagent_result" &&
@@ -1282,6 +1291,7 @@ const make = Effect.gen(function* () {
         providerInstanceId: task.providerInstanceId,
         model: task.model,
         summary: derivedResult,
+        typedResult,
         resultContextTransferId: resultTransfer?.id ?? null,
         latestTerminalRunId: terminalRun?.id ?? null,
         latestTerminalStatus:
@@ -1676,6 +1686,20 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const providers = yield* loadProviders;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
+        const outputSchemaCapableInstanceIds = new Set(
+          yield* Effect.forEach(
+            [...orchestrationCapableInstanceIds],
+            (instanceId) =>
+              providerAdapters.get(instanceId).pipe(
+                Effect.flatMap((adapter) => adapter.getCapabilities()),
+                Effect.map((capabilities) =>
+                  capabilities.turns.supportsOutputSchema === true ? [instanceId] : [],
+                ),
+                Effect.orElseSucceed((): ReadonlyArray<ProviderInstanceId> => []),
+              ),
+            { concurrency: "unbounded" },
+          ).pipe(Effect.map((lists) => lists.flat())),
+        );
         return {
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
@@ -1701,6 +1725,8 @@ const make = Effect.gen(function* () {
                 })) ?? [],
               canRunChildTask: constraints.length === 0,
               canRunCrossProviderChildTask: constraints.length === 0,
+              canEnforceResultSchema:
+                constraints.length === 0 && outputSchemaCapableInstanceIds.has(provider.instanceId),
               constraints: [...constraints],
             };
           }),
@@ -1743,6 +1769,25 @@ const make = Effect.gen(function* () {
           parent.thread.interactionMode,
           input.interactionMode,
         );
+        if (input.resultSchema !== undefined) {
+          // Fail before any child exists: a provider that cannot constrain its
+          // answer would silently turn the contract back into prose.
+          const capabilities = yield* providerAdapters.get(target.modelSelection.instanceId).pipe(
+            Effect.flatMap((adapter) => adapter.getCapabilities()),
+            Effect.mapError((error) =>
+              failure(
+                "provider_unavailable",
+                `Unable to read capabilities of ${target.modelSelection.instanceId}: ${errorMessage(error)}`,
+              ),
+            ),
+          );
+          if (capabilities.turns.supportsOutputSchema !== true) {
+            return yield* failure(
+              "result_schema_unsupported",
+              `Provider ${target.modelSelection.instanceId} cannot enforce a result schema. Omit resultSchema or pick a provider whose orchestrator_capabilities entry has canEnforceResultSchema.`,
+            );
+          }
+        }
         const key = yield* requestKey(input.clientRequestId);
         const commandId = stableCommandId({
           scope,
@@ -1760,6 +1805,7 @@ const make = Effect.gen(function* () {
             parentNodeId: parentRun.rootNodeId,
             task: taskPrompt(input),
             ...(input.title === undefined ? {} : { title: input.title }),
+            ...(input.resultSchema === undefined ? {} : { resultSchema: input.resultSchema }),
             modelSelection: target.modelSelection,
             runtimeMode,
             interactionMode,

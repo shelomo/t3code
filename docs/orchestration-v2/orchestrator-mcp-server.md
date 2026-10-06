@@ -213,6 +213,7 @@ type DelegateTaskInput = {
   };
   title?: string;
   role?: "implementation" | "research" | "review" | "design" | "test" | "general";
+  resultSchema?: Record<string, unknown>;
   mode?: "async" | "wait";
   timeoutMs?: number;
   clientRequestId?: string;
@@ -220,6 +221,18 @@ type DelegateTaskInput = {
   interactionMode?: "inherit" | "plan" | "default";
 };
 ```
+
+`resultSchema` is a JSON Schema for the child's final answer. It rides on the
+child thread (`delegatedResultSchema`), so every turn of that child is
+constrained, and each adapter maps it to its native mechanism: the Claude Agent
+SDK `outputFormat` and Codex `turn/start` `outputSchema`. Adapters that cannot
+enforce a schema leave `turns.supportsOutputSchema` unset, `orchestrator_capabilities`
+reports `canEnforceResultSchema: false` for them, and `delegate_task` fails with
+`result_schema_unsupported` rather than degrading to prose. When the child
+completes, the orchestrator parses its final answer into the task's
+`resultValue`; the MCP result exposes it as `typedResult`. A failed child, or an
+answer that does not parse, leaves `typedResult` null while `summary` keeps the
+text, so the parent can tell a met contract from a missed one.
 
 Provider, model, runtime mode, and interaction mode inherit from the parent
 when omitted. A driver-only target inherits the parent's provider instance
@@ -257,6 +270,7 @@ type DelegateTaskResult = {
   providerInstanceId: string;
   model: string | null;
   summary: string | null;
+  typedResult: { value: unknown } | null;
   resultContextTransferId: string | null;
   latestTerminalRunId: string | null;
   latestTerminalStatus: "completed" | "failed" | "cancelled" | "interrupted" | null;

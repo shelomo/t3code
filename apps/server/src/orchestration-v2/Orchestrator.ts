@@ -108,6 +108,7 @@ import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRun
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import {
   makeSubagentChildThread,
+  parseDelegatedResultValue,
   subagentResultForRun,
   delegatedTaskProgress,
   subagentThreadTitle,
@@ -6487,6 +6488,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           now,
           createdBy: command.createdBy,
           creationSource: command.creationSource,
+          ...(command.resultSchema === undefined
+            ? {}
+            : { delegatedResultSchema: command.resultSchema }),
         }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
@@ -6506,6 +6510,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         prompt: command.task,
         title: command.title ?? null,
         model: command.modelSelection.model,
+        ...(command.resultSchema === undefined ? {} : { resultSchema: command.resultSchema }),
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),
         status: "running",
         result: null,
@@ -9361,6 +9366,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       const now = yield* DateTime.now;
       const result = subagentResultForRun(childProjection, childRun);
+      // Only a completed child can have met its result contract; a failure's
+      // text is the provider error, not an answer.
+      const resultValue =
+        task.resultSchema !== undefined && terminalStatus === "completed"
+          ? parseDelegatedResultValue(result.text)
+          : null;
       const parentRun =
         task.runId === null
           ? undefined
@@ -9374,6 +9385,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: childRun.providerThreadId,
         status: terminalStatus,
         result: result.text,
+        ...(resultValue === null ? {} : { resultValue }),
         completedAt: now,
         updatedAt: now,
       };
