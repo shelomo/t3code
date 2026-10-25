@@ -788,7 +788,7 @@ const runEvent = (input: {
   },
 });
 
-/** A running app-owned task whose child thread's first run the restart cancelled. */
+/** A running background task whose child thread's first run the restart cancelled. */
 const seedRestartCancelledChild = (input: {
   readonly parentThreadId: ThreadId;
   readonly projectId: ProjectId;
@@ -796,6 +796,7 @@ const seedRestartCancelledChild = (input: {
   readonly rootNodeId: NodeId;
   readonly name: string;
   readonly completionWake: "always" | "settled_only";
+  readonly origin?: "app_owned" | "provider_native";
   readonly continuationPending: boolean;
   /** "completed" seeds a settled turn whose background work the restart cancelled. */
   readonly runStatus?: "cancelled" | "completed";
@@ -856,7 +857,7 @@ const seedRestartCancelledChild = (input: {
             threadId: input.parentThreadId,
             runId: input.parentRunId,
             parentNodeId: input.rootNodeId,
-            origin: "app_owned",
+            origin: input.origin ?? "app_owned",
             createdBy: "agent",
             driver,
             providerInstanceId: modelSelection.instanceId,
@@ -902,6 +903,81 @@ const seedRestartCancelledChild = (input: {
   });
 
 it.layer(layerTest)("delegated tasks across a server restart", (it) => {
+  it.effect("wakes the parent for an opted-in provider-native child", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:native-child-wake");
+      const projectId = ProjectId.make("project:native-child-wake");
+      const parentRunId = RunId.make("run:native-child-wake:parent");
+      const rootNodeId = NodeId.make("node:native-child-wake:root");
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId,
+        runId: parentRunId,
+        rootNodeId,
+        taskId: NodeId.make("node:native-child-wake:seed"),
+        deliveryState: "delivered",
+        now,
+      });
+      const child = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId,
+        parentRunId,
+        rootNodeId,
+        name: "native-child-wake-child",
+        origin: "provider_native",
+        completionWake: "always",
+        continuationPending: false,
+        runStatus: "completed",
+        now,
+      });
+      const childResultRunId = child.childRunId;
+      yield* eventSink.write({
+        commandId: CommandId.make("command:native-child-wake:result"),
+        events: [
+          {
+            id: EventId.make("event:native-child-wake:result"),
+            type: "message.updated",
+            threadId: child.childThreadId,
+            runId: childResultRunId,
+            occurredAt: now,
+            payload: {
+              id: MessageId.make("message:native-child-wake:result"),
+              threadId: child.childThreadId,
+              runId: childResultRunId,
+              nodeId: null,
+              role: "assistant",
+              text: "Native child finished.",
+              attachments: [],
+              streaming: false,
+              createdBy: "agent",
+              creationSource: "provider",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+
+      yield* orchestrator.recoverDelegatedTasks;
+
+      const parent = yield* orchestrator.getThreadProjection(threadId);
+      const task = parent.subagents.find((candidate) => candidate.id === child.taskId);
+      assert.equal(task?.origin, "provider_native");
+      assert.equal(task?.status, "completed");
+      assert.deepEqual(task?.completionDelivery, {
+        state: "claimed",
+        observedByRunId: null,
+      });
+      assert.deepEqual(
+        parent.runs.find((run) => run.id === parentRunId)?.delegatedCompletion?.delivery?.taskIds,
+        [child.taskId],
+      );
+    }),
+  );
+
   it.effect("holds a restart-cancelled child for its continuation's result", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

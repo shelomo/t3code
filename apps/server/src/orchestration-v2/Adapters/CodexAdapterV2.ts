@@ -2660,6 +2660,10 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               prompt: input.prompt,
               title: input.title,
               model: subagentModels.get(input.nativeThreadId) ?? input.model,
+              // Codex native children do not resume their parent after the
+              // child turn settles. Route the terminal result through the
+              // existing delegated-completion cohort instead.
+              completionWake: "always" as const,
               status: "running",
               result: null,
               startedAt: now,

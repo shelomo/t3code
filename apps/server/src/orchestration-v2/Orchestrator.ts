@@ -1886,13 +1886,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         );
       const task = projection.subagents.find(
-        (candidate) => candidate.id === command.taskId && candidate.origin === "app_owned",
+        (candidate) =>
+          candidate.id === command.taskId &&
+          (candidate.origin === "app_owned" || candidate.completionWake === "always"),
       );
       if (task === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Delegated task ${command.taskId} is not an app-owned task of thread ${command.parentThreadId}.`,
+          cause: `Delegated task ${command.taskId} is not a deliverable background task of thread ${command.parentThreadId}.`,
         });
       }
       const state =
@@ -2045,7 +2047,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       const cohort = parentRun.delegatedCompletion;
       const tasks = input.projection.subagents.filter(
-        (candidate) => candidate.origin === "app_owned" && candidate.runId === input.parentRunId,
+        (candidate) =>
+          candidate.runId === input.parentRunId &&
+          (candidate.origin === "app_owned" || candidate.completionWake === "always"),
       );
       if (cohort === undefined && tasks.length === 0) {
         return;
@@ -2124,7 +2128,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .filter((run) => run.delegatedCompletion !== undefined)
             .map((run) => run.id),
           ...input.projection.subagents
-            .filter((task) => task.origin === "app_owned" && task.runId !== null)
+            .filter(
+              (task) =>
+                task.runId !== null &&
+                (task.origin === "app_owned" || task.completionWake === "always"),
+            )
             .map((task) => task.runId!),
         ]),
       ),
@@ -8257,7 +8265,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       for (const task of subagents) {
         const delivery = task.completionDelivery?.state;
         if (
-          task.origin === "app_owned" &&
+          (task.origin === "app_owned" || task.completionWake === "always") &&
           task.runId !== null &&
           delivery !== "acknowledged" &&
           delivery !== "delivered" &&
@@ -9029,7 +9037,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    * thread is not one. Thread lineage and fork origin are immutable, so this
    * is safe to read without holding either thread's dispatch lock.
    */
-  const appOwnedSubagentParentThreadId = (childThreadId: ThreadId) =>
+  const subagentParentThreadId = (childThreadId: ThreadId) =>
     Effect.gen(function* () {
       const childThread = yield* projectionStore.getThread(childThreadId);
       const lineage = childThread.lineage;
@@ -9270,8 +9278,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   /**
-   * Transfers a terminal child's result into its parent and offers the parent
-   * wake. Every mutation here targets the PARENT thread, so callers must hold
+   * Transfers a terminal background child's result into its parent and offers
+   * the parent wake. Every mutation here targets the PARENT thread, so callers must hold
    * the parent thread's dispatch lock rather than the child's: the
    * delegated_task.wake-policy handler rewrites the same subagent row under
    * that lock with a full-row payload, and unserialized writers clobber each
@@ -9279,7 +9287,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    * running). `settledContinuationOf` names the restart continuation that just
    * declined or failed, so its own still-running effect does not hold the child.
    */
-  const finalizeAppOwnedSubagent = (
+  const finalizeSubagentResult = (
     childThreadId: ThreadId,
     options?: { readonly settledContinuationOf?: RunId },
   ) =>
@@ -9348,7 +9356,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const task = parentProjection.subagents.find(
         (candidate) =>
           candidate.id === forkedFrom.nodeId &&
-          candidate.origin === "app_owned" &&
+          (candidate.origin === "app_owned" || candidate.completionWake === "always") &&
           candidate.childThreadId === childThreadId,
       );
       if (task === undefined) {
@@ -9621,7 +9629,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       >();
       for (const task of projection.subagents) {
         if (
-          task.origin !== "app_owned" ||
+          (task.origin !== "app_owned" && task.completionWake !== "always") ||
           task.runId !== parentRun.id ||
           !delivery.taskIds.includes(task.id) ||
           task.completionDelivery?.state !== "claimed"
@@ -9636,7 +9644,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const pendingTaskIds = projection.subagents
         .filter(
           (task) =>
-            task.origin === "app_owned" &&
+            (task.origin === "app_owned" || task.completionWake === "always") &&
             task.runId === parentRun.id &&
             isTerminalDelegatedTaskStatus(task.status) &&
             (task.completionDelivery?.state === "pending" ||
@@ -9756,7 +9764,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? projection.subagents
             .filter(
               (task) =>
-                task.origin === "app_owned" &&
+                (task.origin === "app_owned" || task.completionWake === "always") &&
                 task.runId === parentRun.id &&
                 task.completionDelivery?.state === "pending" &&
                 isTerminalDelegatedTaskStatus(task.status) &&
@@ -10327,9 +10335,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // while holding the parent lock, so nesting the parent lock inside the
       // child lock here would invert that order, and the keyed executor's
       // semaphores are neither reentrant nor deadlock-aware.
-      const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);
+      const parentThreadId = yield* subagentParentThreadId(threadId);
       if (parentThreadId !== undefined) {
-        yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
+        yield* threadDispatch.withLock(parentThreadId, finalizeSubagentResult(threadId));
       }
       if (stored.event.type === "run.updated") {
         yield* threadDispatch.withLock(
@@ -10394,10 +10402,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               const thread = yield* projectionStore.getThreadShell(threadId);
               const parentThreadId = thread?.lineage.parentThreadId;
               if (parentThreadId === undefined || parentThreadId === null) return;
-              yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
+              yield* threadDispatch.withLock(parentThreadId, finalizeSubagentResult(threadId));
             }).pipe(
               Effect.catchCause((cause) =>
-                Effect.logWarning("Failed to recover terminal app-owned subagent", {
+                Effect.logWarning("Failed to recover terminal background subagent", {
                   childThreadId: threadId,
                   cause,
                 }),
@@ -10493,15 +10501,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const recoverDelegatedTask = (threadId: ThreadId, sourceRunId: RunId) =>
     Effect.gen(function* () {
-      const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);
+      const parentThreadId = yield* subagentParentThreadId(threadId);
       if (parentThreadId === undefined) return;
       yield* threadDispatch.withLock(
         parentThreadId,
-        finalizeAppOwnedSubagent(threadId, { settledContinuationOf: sourceRunId }),
+        finalizeSubagentResult(threadId, { settledContinuationOf: sourceRunId }),
       );
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to recover delegated task after restart", {
+        Effect.logWarning("Failed to recover background subagent after restart", {
           childThreadId: threadId,
           cause,
         }),
