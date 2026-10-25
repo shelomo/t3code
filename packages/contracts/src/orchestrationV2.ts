@@ -675,11 +675,14 @@ export const OrchestrationV2Subagent = Schema.Struct({
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
-  // Parent-wake policy for app-owned tasks: "always" offers a continuation on
-  // every terminal (async delegations; queue_after_active sequences it behind
-  // a live parent run), "settled_only" offers only when the parent has no
-  // live run (wait-mode delegations, whose result returns through the
-  // blocking tool call). Absent on legacy records; treated as settled_only.
+  /** JSON Schema the child's final answer must satisfy, when the parent asked for one. */
+  resultSchema: Schema.optional(OrchestrationV2ResultSchema),
+  // Parent-wake policy for background subagents: "always" offers a
+  // continuation on every terminal (async delegations and provider-native
+  // subagents; queue_after_active sequences it behind a live parent run),
+  // "settled_only" offers only when the parent has no live run (wait-mode
+  // delegations, whose result returns through the blocking tool call). Absent
+  // on legacy records; treated as settled_only.
   completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   status: Schema.Literals([
